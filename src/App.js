@@ -1,111 +1,141 @@
 import React, { useState, useRef } from 'react';
-import { UserAgent, SessionState } from 'sip.js';
+import { 
+  UserAgent, 
+  Registerer, 
+  RegistererState, 
+  SessionState 
+} from 'sip.js';
 
 function App() {
-  // ---------- State for Registration ----------
-  const [wssUrl, setWssUrl] = useState('wss://moydom.bgsoft.uz/ws');
-  const [sipExtension, setSipExtension] = useState('104');
-  const [username, setUsername] = useState('104');
-  const [password, setPassword] = useState('12345678');
+  // Pre-populated SIP connection details
+  const [wssUrl] = useState('wss://moydom.bgsoft.uz/ws');
+  const [sipExtension] = useState('104');
+  const [username] = useState('104');
+  const [password] = useState('12345678');
   const [registrationStatus, setRegistrationStatus] = useState('Not registered');
 
-  // ---------- State for Calls ----------
+  // Call-related state
   const [destination, setDestination] = useState('');
   const [incomingCallInfo, setIncomingCallInfo] = useState('');
   const [isCallOngoing, setIsCallOngoing] = useState(false);
 
-  // ---------- Refs to store SIP.js objects and session ----------
-  const userAgentRef = useRef(null);
+  // Refs for SIP objects
+  // We store both the userAgent and registerer together
+  const sipRef = useRef({ userAgent: null, registerer: null });
+  // Current call session (for outgoing or incoming call)
   const currentSessionRef = useRef(null);
+  // Ref for the audio element to play remote audio
   const remoteAudioRef = useRef(null);
 
-  // ========== REGISTER HANDLER ==========
-  const handleRegister = () => {
-    // 1) Create a new SIP.js UserAgent configuration
+  // Connect/Registration handler using the new API
+  const handleConnect = () => {
+    // Convert our SIP URI string into a URI object
+    const targetUri = UserAgent.makeURI(`sip:${sipExtension}@moydom.bgsoft.uz`);
+    if (!targetUri) {
+      setRegistrationStatus('Invalid SIP URI');
+      return;
+    }
+    
     const config = {
-      uri: `sip:${sipExtension}@moydom.bgsoft.uz`,
+      uri: targetUri,
       authorizationUsername: username,
       authorizationPassword: password,
       transportOptions: {
-        wsServers: [wssUrl],
+        wsServers: [wssUrl]
       },
-      // Audio-only
       sessionDescriptionHandlerFactoryOptions: {
-        constraints: { audio: true, video: false },
-      },
+        constraints: { audio: true, video: false }
+      }
     };
 
-    // 2) Instantiate the UserAgent
-    userAgentRef.current = new UserAgent(config);
+    // Create the UserAgent
+    const userAgent = new UserAgent(config);
 
-    // 3) Setup event listeners
-    userAgentRef.current.on('registered', () => {
-      setRegistrationStatus('Registered Successfully!');
+    // Set delegate to handle incoming calls
+    userAgent.delegate = {
+      onInvite: (invitation) => {
+        currentSessionRef.current = invitation;
+        const fromURI = invitation.remoteIdentity.uri.toString();
+        setIncomingCallInfo(`Incoming call from: ${fromURI}`);
+      }
+    };
+
+    // Start the UserAgent and then register
+    userAgent.start().then(() => {
+      const registerer = new Registerer(userAgent);
+      // Save both for later use
+      sipRef.current = { userAgent, registerer };
+
+      // Listen for registration state changes
+      registerer.stateChange.addListener((state) => {
+        if (state === RegistererState.Registered) {
+          setRegistrationStatus('Registered Successfully!');
+        } else if (state === RegistererState.Unregistered) {
+          setRegistrationStatus('Unregistered');
+        } else if (state === RegistererState.Terminated) {
+          setRegistrationStatus('Registration Terminated');
+        }
+      });
+
+      registerer.register();
+    }).catch((error) => {
+      console.error("Failed to start UserAgent:", error);
+      setRegistrationStatus(`Registration Failed: ${error.message}`);
     });
-
-    userAgentRef.current.on('registrationFailed', (error) => {
-      setRegistrationStatus(`Registration Failed: ${error}`);
-    });
-
-    // Handle incoming calls
-    userAgentRef.current.on('invite', (incomingSession) => {
-      currentSessionRef.current = incomingSession;
-      const fromURI = incomingSession.remoteIdentity.uri.toString();
-      setIncomingCallInfo(`Incoming call from: ${fromURI}`);
-    });
-
-    // 4) Start the UserAgent (this triggers the registration process)
-    userAgentRef.current.start();
   };
 
-  // ========== CALL HANDLER (OUTGOING) ==========
+  // Outgoing call handler
   const handleCall = () => {
-    if (!userAgentRef.current) {
-      alert('Not registered yet!');
+    if (!sipRef.current.userAgent) {
+      alert('Not connected yet!');
       return;
     }
-
-    // Create a new outgoing session
-    const targetURI = `sip:${destination}@moydom.bgsoft.uz`;
-    const session = userAgentRef.current.invite(targetURI, {
+    // Create target SIP URI using the provided destination
+    const targetURI = UserAgent.makeURI(`sip:${destination}@moydom.bgsoft.uz`);
+    if (!targetURI) {
+      alert('Invalid target URI!');
+      return;
+    }
+    // Use userAgent.invite to create an outgoing call (Inviter)
+    const inviter = sipRef.current.userAgent.invite(targetURI.toString(), {
       sessionDescriptionHandlerOptions: {
-        constraints: { audio: true, video: false },
-      },
+        constraints: { audio: true, video: false }
+      }
     });
-    currentSessionRef.current = session;
+    currentSessionRef.current = inviter;
 
-    // When the call is accepted/established
-    session.on('accepted', () => {
-      setIsCallOngoing(true);
-      setupRemoteMedia(session);
+    // Listen for call state changes (e.g., established, terminated)
+    inviter.stateChange.addListener((state) => {
+      if (state === SessionState.Established) {
+        setIsCallOngoing(true);
+        setupRemoteMedia(inviter);
+      } else if (state === SessionState.Terminated) {
+        endCall();
+      }
     });
-
-    // When the remote party hangs up or the call ends
-    session.on('bye', endCall);
-    session.on('terminated', endCall);
   };
 
-  // ========== ANSWER HANDLER (INCOMING) ==========
+  // Answer an incoming call
   const handleAnswer = () => {
     if (!currentSessionRef.current) return;
-
-    currentSessionRef.current.accept({
+    const invitation = currentSessionRef.current;
+    invitation.accept({
       sessionDescriptionHandlerOptions: {
-        constraints: { audio: true, video: false },
-      },
+        constraints: { audio: true, video: false }
+      }
     });
-
-    currentSessionRef.current.on('accepted', () => {
-      setIsCallOngoing(true);
-      setupRemoteMedia(currentSessionRef.current);
-      setIncomingCallInfo('Call in progress...');
+    invitation.stateChange.addListener((state) => {
+      if (state === SessionState.Established) {
+        setIsCallOngoing(true);
+        setupRemoteMedia(invitation);
+        setIncomingCallInfo('Call in progress...');
+      } else if (state === SessionState.Terminated) {
+        endCall();
+      }
     });
-
-    currentSessionRef.current.on('bye', endCall);
-    currentSessionRef.current.on('terminated', endCall);
   };
 
-  // ========== DECLINE HANDLER (INCOMING) ==========
+  // Decline an incoming call
   const handleDecline = () => {
     if (!currentSessionRef.current) return;
     currentSessionRef.current.reject();
@@ -113,25 +143,22 @@ function App() {
     resetSession();
   };
 
-  // ========== HANGUP HANDLER ==========
+  // Hang up an ongoing call
   const handleHangUp = () => {
     if (!currentSessionRef.current) return;
-
     const session = currentSessionRef.current;
     if (session.state === SessionState.Established) {
       session.bye();
-    } else if (session.state === SessionState.Initial || session.state === SessionState.InviteReceived) {
+    } else {
       session.reject();
     }
     endCall();
   };
 
-  // ========== SETUP REMOTE MEDIA ==========
-  // Attach incoming audio stream to <audio> element
+  // Attach incoming audio stream to the audio element
   const setupRemoteMedia = (session) => {
     const sdh = session.sessionDescriptionHandler;
     if (!sdh) return;
-
     sdh.on('addTrack', (event) => {
       const remoteStream = new MediaStream();
       remoteStream.addTrack(event.track);
@@ -141,7 +168,7 @@ function App() {
     });
   };
 
-  // ========== END CALL / CLEANUP ==========
+  // End call and cleanup
   const endCall = () => {
     setIncomingCallInfo('');
     setIsCallOngoing(false);
@@ -155,59 +182,22 @@ function App() {
     currentSessionRef.current = null;
   };
 
-  // ------------------------------------------------------------------
-  // RENDER
-  // ------------------------------------------------------------------
   return (
     <div style={{ padding: '20px' }}>
       <h1>React SIP Client</h1>
 
-      {/* ========== Registration Panel ========== */}
+      {/* Connection Panel – SIP details are preinserted */}
       <div style={{ border: '1px solid #ccc', padding: '10px', marginBottom: '20px' }}>
-        <h2>Registration</h2>
-        <div>
-          <label><strong>WSS URL:</strong></label>
-          <input
-            type="text"
-            value={wssUrl}
-            onChange={(e) => setWssUrl(e.target.value)}
-            style={{ width: '300px', marginLeft: '10px' }}
-          />
-        </div>
-        <div>
-          <label><strong>SIP Extension:</strong></label>
-          <input
-            type="text"
-            value={sipExtension}
-            onChange={(e) => setSipExtension(e.target.value)}
-            style={{ marginLeft: '10px' }}
-          />
-        </div>
-        <div>
-          <label><strong>Username:</strong></label>
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            style={{ marginLeft: '10px' }}
-          />
-        </div>
-        <div>
-          <label><strong>Password:</strong></label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{ marginLeft: '10px' }}
-          />
-        </div>
-        <button onClick={handleRegister} style={{ marginTop: '10px' }}>
-          Register
-        </button>
+        <h2>Connection Details</h2>
+        <p><strong>WSS URL:</strong> {wssUrl}</p>
+        <p><strong>SIP Extension:</strong> {sipExtension}</p>
+        <p><strong>Username:</strong> {username}</p>
+        <p><strong>Password:</strong> {password}</p>
+        <button onClick={handleConnect}>Connect</button>
         <p><strong>Status:</strong> {registrationStatus}</p>
       </div>
 
-      {/* ========== Call Panel ========== */}
+      {/* Call Controls Panel */}
       <div style={{ border: '1px solid #ccc', padding: '10px' }}>
         <h2>Call Controls</h2>
         <div>
@@ -236,7 +226,7 @@ function App() {
           Decline
         </button>
 
-        {/* Audio element to play remote stream */}
+        {/* Audio element for remote audio */}
         <h3>Remote Audio</h3>
         <audio ref={remoteAudioRef} autoPlay />
       </div>
