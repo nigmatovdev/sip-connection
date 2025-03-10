@@ -5,53 +5,57 @@ import {
   RegistererState, 
   SessionState 
 } from 'sip.js';
+import './App.css';
 
 function App() {
-  // Pre-populated SIP connection details
+  // Pre-populated SIP connection details (hidden by default)
   const [wssUrl] = useState('wss://moydom.bgsoft.uz/ws');
   const [sipExtension] = useState('104');
   const [username] = useState('104');
   const [password] = useState('12345678');
   const [registrationStatus, setRegistrationStatus] = useState('Not registered');
 
+  // State to toggle connection details visibility
+  const [showConnectionDetails, setShowConnectionDetails] = useState(false);
+
   // Call-related state
   const [destination, setDestination] = useState('');
   const [incomingCallInfo, setIncomingCallInfo] = useState('');
   const [isCallOngoing, setIsCallOngoing] = useState(false);
+  const [localStream, setLocalStream] = useState(null);
 
-  // Refs for SIP objects
-  // We store both the userAgent and registerer together
+  // Refs for SIP objects and media elements
   const sipRef = useRef({ userAgent: null, registerer: null });
-  // Current call session (for outgoing or incoming call)
   const currentSessionRef = useRef(null);
-  // Ref for the audio element to play remote audio
-  const remoteAudioRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const localVideoRef = useRef(null);
 
-  // Connect/Registration handler using the new API
+  // Handler to toggle the connection details panel
+  const toggleConnectionDetails = () => {
+    setShowConnectionDetails(prev => !prev);
+  };
+
+  // Connect/Registration handler using the new SIP.js API
   const handleConnect = () => {
-    // Convert our SIP URI string into a URI object
+    // Convert SIP URI string to a proper URI object.
     const targetUri = UserAgent.makeURI(`sip:${sipExtension}@moydom.bgsoft.uz`);
     if (!targetUri) {
       setRegistrationStatus('Invalid SIP URI');
       return;
     }
-    
     const config = {
       uri: targetUri,
       authorizationUsername: username,
       authorizationPassword: password,
-      transportOptions: {
-        wsServers: [wssUrl]
-      },
+      transportOptions: { wsServers: [wssUrl] },
+      // Enable both audio and video
       sessionDescriptionHandlerFactoryOptions: {
-        constraints: { audio: true, video: false }
+        constraints: { audio: true, video: true }
       }
     };
 
-    // Create the UserAgent
     const userAgent = new UserAgent(config);
-
-    // Set delegate to handle incoming calls
+    // Use the delegate to handle incoming calls
     userAgent.delegate = {
       onInvite: (invitation) => {
         currentSessionRef.current = invitation;
@@ -60,10 +64,9 @@ function App() {
       }
     };
 
-    // Start the UserAgent and then register
+    // Start the UA and register
     userAgent.start().then(() => {
       const registerer = new Registerer(userAgent);
-      // Save both for later use
       sipRef.current = { userAgent, registerer };
 
       // Listen for registration state changes
@@ -76,7 +79,6 @@ function App() {
           setRegistrationStatus('Registration Terminated');
         }
       });
-
       registerer.register();
     }).catch((error) => {
       console.error("Failed to start UserAgent:", error);
@@ -90,21 +92,16 @@ function App() {
       alert('Not connected yet!');
       return;
     }
-    // Create target SIP URI using the provided destination
     const targetURI = UserAgent.makeURI(`sip:${destination}@moydom.bgsoft.uz`);
     if (!targetURI) {
       alert('Invalid target URI!');
       return;
     }
-    // Use userAgent.invite to create an outgoing call (Inviter)
+    // Initiate an outgoing call with video
     const inviter = sipRef.current.userAgent.invite(targetURI.toString(), {
-      sessionDescriptionHandlerOptions: {
-        constraints: { audio: true, video: false }
-      }
+      sessionDescriptionHandlerOptions: { constraints: { audio: true, video: true } }
     });
     currentSessionRef.current = inviter;
-
-    // Listen for call state changes (e.g., established, terminated)
     inviter.stateChange.addListener((state) => {
       if (state === SessionState.Established) {
         setIsCallOngoing(true);
@@ -120,9 +117,7 @@ function App() {
     if (!currentSessionRef.current) return;
     const invitation = currentSessionRef.current;
     invitation.accept({
-      sessionDescriptionHandlerOptions: {
-        constraints: { audio: true, video: false }
-      }
+      sessionDescriptionHandlerOptions: { constraints: { audio: true, video: true } }
     });
     invitation.stateChange.addListener((state) => {
       if (state === SessionState.Established) {
@@ -155,17 +150,16 @@ function App() {
     endCall();
   };
 
-  // Attach incoming audio stream to the audio element
+  // Setup remote media by grabbing all receivers and attaching to remote video element
   const setupRemoteMedia = (session) => {
-    const sdh = session.sessionDescriptionHandler;
-    if (!sdh) return;
-    sdh.on('addTrack', (event) => {
-      const remoteStream = new MediaStream();
-      remoteStream.addTrack(event.track);
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = remoteStream;
-      }
+    const pc = session.sessionDescriptionHandler.peerConnection;
+    const remoteStream = new MediaStream();
+    pc.getReceivers().forEach(receiver => {
+      if (receiver.track) remoteStream.addTrack(receiver.track);
     });
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteStream;
+    }
   };
 
   // End call and cleanup
@@ -176,59 +170,84 @@ function App() {
   };
 
   const resetSession = () => {
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.srcObject = null;
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
     }
     currentSessionRef.current = null;
   };
 
+  // Start local video preview by obtaining camera and mic stream
+  const startLocalVideo = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.muted = true; // Prevent feedback
+      }
+    } catch (error) {
+      console.error("Failed to get local video:", error);
+    }
+  };
+
   return (
-    <div style={{ padding: '20px' }}>
-      <h1>React SIP Client</h1>
-
-      {/* Connection Panel – SIP details are preinserted */}
-      <div style={{ border: '1px solid #ccc', padding: '10px', marginBottom: '20px' }}>
-        <h2>Connection Details</h2>
-        <p><strong>WSS URL:</strong> {wssUrl}</p>
-        <p><strong>SIP Extension:</strong> {sipExtension}</p>
-        <p><strong>Username:</strong> {username}</p>
-        <p><strong>Password:</strong> {password}</p>
-        <button onClick={handleConnect}>Connect</button>
-        <p><strong>Status:</strong> {registrationStatus}</p>
+    <div className="container">
+      <h1 className="header">SIP Client</h1>
+      {/* Toggle Icon for Connection Details */}
+      <div className="toggle-container">
+        <button onClick={toggleConnectionDetails} className="icon-button">
+          {showConnectionDetails ? 'Hide Connection Details ▲' : 'Show Connection Details ▼'}
+        </button>
       </div>
-
-      {/* Call Controls Panel */}
-      <div style={{ border: '1px solid #ccc', padding: '10px' }}>
-        <h2>Call Controls</h2>
-        <div>
-          <label><strong>Destination:</strong></label>
-          <input
-            type="text"
-            value={destination}
-            onChange={(e) => setDestination(e.target.value)}
-            placeholder="Enter extension or number"
-            style={{ marginLeft: '10px' }}
-          />
-          <button onClick={handleCall} style={{ marginLeft: '10px' }}>
-            Call
-          </button>
-          <button onClick={handleHangUp} style={{ marginLeft: '10px' }} disabled={!isCallOngoing}>
-            Hang Up
-          </button>
+      
+      {/* Connection Panel (hidden by default) */}
+      {showConnectionDetails && (
+        <div className="panel">
+          <h2>Connection Details</h2>
+          <p><strong>WSS URL:</strong> {wssUrl}</p>
+          <p><strong>SIP Extension:</strong> {sipExtension}</p>
+          <p><strong>Username:</strong> {username}</p>
+          <p><strong>Password:</strong> {password}</p>
+          <button onClick={handleConnect} className="button">Connect</button>
+          <p><strong>Status:</strong> {registrationStatus}</p>
         </div>
-
+      )}
+      
+      {/* Call Controls Panel */}
+      <div className="panel">
+        <h2>Call Controls</h2>
+        <div className="input-group">
+          <label><strong>Destination:</strong></label>
+          <input 
+            type="text" 
+            value={destination} 
+            onChange={(e) => setDestination(e.target.value)} 
+            placeholder="Enter extension or number" 
+            className="input-field"
+          />
+          <button onClick={handleCall} className="button">Call</button>
+          <button onClick={handleHangUp} className="button button-danger" disabled={!isCallOngoing}>Hang Up</button>
+        </div>
         <h3>Incoming Call</h3>
-        <p style={{ fontWeight: 'bold' }}>{incomingCallInfo}</p>
-        <button onClick={handleAnswer} disabled={!incomingCallInfo}>
-          Answer
-        </button>
-        <button onClick={handleDecline} disabled={!incomingCallInfo} style={{ marginLeft: '10px' }}>
-          Decline
-        </button>
-
-        {/* Audio element for remote audio */}
-        <h3>Remote Audio</h3>
-        <audio ref={remoteAudioRef} autoPlay />
+        <p className="incoming-call">{incomingCallInfo}</p>
+        <button onClick={handleAnswer} className="button" disabled={!incomingCallInfo}>Answer</button>
+        <button onClick={handleDecline} className="button button-danger" disabled={!incomingCallInfo}>Decline</button>
+      </div>
+      
+      {/* Video Streaming Panel */}
+      <div className="panel">
+        <h2>Video Streaming</h2>
+        <div className="video-container">
+          <div className="video-box">
+            <h4>Local Video</h4>
+            <video ref={localVideoRef} className="video" autoPlay playsInline />
+            <button onClick={startLocalVideo} className="button">Start Local Preview</button>
+          </div>
+          <div className="video-box">
+            <h4>Remote Video</h4>
+            <video ref={remoteVideoRef} className="video" autoPlay playsInline />
+          </div>
+        </div>
       </div>
     </div>
   );
