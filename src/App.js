@@ -130,11 +130,17 @@ function App() {
     });
   };
 
-  // Decline an incoming call
+  // Updated Decline Handler – check session state before deciding how to end the call.
   const handleDecline = () => {
     if (!currentSessionRef.current) return;
-    currentSessionRef.current.reject();
-    setIncomingCallInfo('Call declined');
+    const session = currentSessionRef.current;
+    if (session.state === SessionState.InviteReceived) {
+      session.reject();
+      setIncomingCallInfo('Call declined');
+    } else if (session.state === SessionState.Established) {
+      session.bye();
+      setIncomingCallInfo('Call ended');
+    }
     resetSession();
   };
 
@@ -192,7 +198,8 @@ function App() {
 
   return (
     <div className="container">
-      <h1 className="header">SIP Client</h1>
+      <h1 className="header">Fancy React SIP Client</h1>
+      
       {/* Toggle Icon for Connection Details */}
       <div className="toggle-container">
         <button onClick={toggleConnectionDetails} className="icon-button">
@@ -226,7 +233,7 @@ function App() {
             className="input-field"
           />
           <button onClick={handleCall} className="button">Call</button>
-          <button onClick={handleHangUp} className="button button-danger" disabled={!isCallOngoing}>Hang Up</button>
+          <button onClick={handleHangUp} className="button button-danger" disabled={!isCallOngoing}>Hang</button>
         </div>
         <h3>Incoming Call</h3>
         <p className="incoming-call">{incomingCallInfo}</p>
