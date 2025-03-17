@@ -5,6 +5,7 @@ import {
   RegistererState, 
   SessionState 
 } from 'sip.js';
+import ringtoneSound from './assets/ringtone.mp3';
 import './App.css';
 
 function App() {
@@ -14,6 +15,7 @@ function App() {
   const [username] = useState('104');
   const [password] = useState('12345678');
   const [registrationStatus, setRegistrationStatus] = useState('Connecting...');
+  const [showReadyScreen, setShowReadyScreen] = useState(true);
 
   // Call-related state
   const [incomingCallInfo, setIncomingCallInfo] = useState('');
@@ -24,15 +26,19 @@ function App() {
   const sipRef = useRef({ userAgent: null, registerer: null });
   const currentSessionRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const ringToneRef = useRef(new Audio(ringtoneSound));
 
-  // Auto-connect on component mount
+  // Auto-connect on mount
   useEffect(() => {
     handleConnect();
+    ringToneRef.current.loop = true;
+    
     return () => {
-      // Cleanup on unmount
       if (sipRef.current.userAgent) {
         sipRef.current.userAgent.stop();
       }
+      ringToneRef.current.pause();
+      ringToneRef.current.currentTime = 0;
     };
   }, []);
 
@@ -59,6 +65,8 @@ function App() {
         currentSessionRef.current = invitation;
         const fromURI = invitation.remoteIdentity.uri.toString();
         setIncomingCallInfo(`Incoming call from: ${fromURI}`);
+        setShowReadyScreen(false);
+        ringToneRef.current.play();
       }
     };
 
@@ -70,12 +78,15 @@ function App() {
         switch (state) {
           case RegistererState.Registered:
             setRegistrationStatus('Ready to receive calls');
+            setShowReadyScreen(true);
             break;
           case RegistererState.Unregistered:
             setRegistrationStatus('Disconnected');
+            setShowReadyScreen(false);
             break;
           case RegistererState.Terminated:
             setRegistrationStatus('Connection terminated');
+            setShowReadyScreen(false);
             break;
           default:
             break;
@@ -85,16 +96,20 @@ function App() {
     }).catch((error) => {
       console.error("Connection failed:", error);
       setRegistrationStatus(`Connection Failed: ${error.message}`);
+      setShowReadyScreen(false);
     });
   };
 
   const handleAnswer = () => {
     if (!currentSessionRef.current) return;
+    // Pause ringtone immediately.
+    ringToneRef.current.pause();
+    ringToneRef.current.currentTime = 0;
+
     const invitation = currentSessionRef.current;
-    invitation.accept({
-      sessionDescriptionHandlerOptions: { constraints: { audio: true, video: true } }
-    });
+    // Add state-change listener BEFORE calling accept.
     invitation.stateChange.addListener((state) => {
+      console.log("Invitation state changed:", state);
       if (state === SessionState.Established) {
         setIsCallOngoing(true);
         setupRemoteMedia(invitation);
@@ -103,10 +118,16 @@ function App() {
         endCall();
       }
     });
+    invitation.accept({
+      sessionDescriptionHandlerOptions: { constraints: { audio: true, video: true } }
+    });
   };
 
   const handleDecline = () => {
     if (!currentSessionRef.current) return;
+    ringToneRef.current.pause();
+    ringToneRef.current.currentTime = 0;
+    
     const session = currentSessionRef.current;
     if (session.state === SessionState.InviteReceived) {
       session.reject();
@@ -143,8 +164,6 @@ function App() {
   };
 
   const handleOpenDoor = () => {
-    // Implement door opening logic here
-    // This could be an API call to your door system
     alert('Door opening command sent!');
   };
 
@@ -152,6 +171,7 @@ function App() {
     setIncomingCallInfo('');
     setIsCallOngoing(false);
     setIsMuted(false);
+    setShowReadyScreen(true);
     resetSession();
   };
 
@@ -165,12 +185,29 @@ function App() {
   return (
     <div className="container">
       <div className="status-bar">
-        <span className={`status-indicator ${registrationStatus.includes('Ready') ? 'connected' : ''}`}></span>
-        {registrationStatus}
+        <div className="status-content">
+          <span className={`status-indicator ${registrationStatus.includes('Ready') ? 'connected' : ''}`}></span>
+          <div className="status-text">
+            <span className="status-icon">📞</span>
+            <span className="status-label">{registrationStatus}</span>
+            <span className="status-extension">Extension: {sipExtension}</span>
+          </div>
+        </div>
       </div>
 
       <div className="video-panel">
-        <video ref={remoteVideoRef} className="remote-video" autoPlay playsInline />
+        {showReadyScreen && registrationStatus.includes('Ready') ? (
+          <div className="ready-screen">
+            <div className="ready-content">
+              <div className="ready-icon">📞</div>
+              <h1>Ready to Receive Calls</h1>
+              <p>Extension: {sipExtension}</p>
+              <div className="pulse-ring"></div>
+            </div>
+          </div>
+        ) : (
+          <video ref={remoteVideoRef} className="remote-video" autoPlay playsInline />
+        )}
         
         {isCallOngoing && (
           <div className="call-controls">
