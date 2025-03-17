@@ -28,6 +28,20 @@ function App() {
   const remoteVideoRef = useRef(null);
   const ringToneRef = useRef(new Audio(ringtoneSound));
 
+  // Unlock audio context on first user interaction
+  useEffect(() => {
+    const unlockAudio = () => {
+      ringToneRef.current.play().then(() => {
+        ringToneRef.current.pause();
+      }).catch((err) => {
+        console.log("Audio unlock error:", err);
+      });
+      window.removeEventListener('click', unlockAudio);
+    };
+    window.addEventListener('click', unlockAudio);
+    return () => window.removeEventListener('click', unlockAudio);
+  }, []);
+
   // Auto-connect on mount
   useEffect(() => {
     handleConnect();
@@ -54,8 +68,19 @@ function App() {
       authorizationUsername: username,
       authorizationPassword: password,
       transportOptions: { wsServers: [wssUrl] },
+      // Added TURN server configuration along with STUN.
       sessionDescriptionHandlerFactoryOptions: {
-        constraints: { audio: true, video: true }
+        constraints: { audio: true, video: true },
+        peerConnectionOptions: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { 
+              urls: 'turn:turn.example.com:3478', // Replace with your TURN server URL
+              username: 'user',                // Replace with your TURN username
+              credential: 'pass'               // Replace with your TURN credential
+            }
+          ]
+        }
       }
     };
 
@@ -66,7 +91,9 @@ function App() {
         const fromURI = invitation.remoteIdentity.uri.toString();
         setIncomingCallInfo(`Incoming call from: ${fromURI}`);
         setShowReadyScreen(false);
-        ringToneRef.current.play();
+        ringToneRef.current.play().catch((err) => {
+          console.log("Ringtone play prevented:", err);
+        });
       }
     };
 
@@ -107,7 +134,7 @@ function App() {
     ringToneRef.current.currentTime = 0;
 
     const invitation = currentSessionRef.current;
-    // Add state-change listener BEFORE calling accept.
+    // Attach state-change listener before calling accept.
     invitation.stateChange.addListener((state) => {
       console.log("Invitation state changed:", state);
       if (state === SessionState.Established) {
@@ -142,11 +169,28 @@ function App() {
   const setupRemoteMedia = (session) => {
     const pc = session.sessionDescriptionHandler.peerConnection;
     const remoteStream = new MediaStream();
-    pc.getReceivers().forEach(receiver => {
-      if (receiver.track) remoteStream.addTrack(receiver.track);
+    
+    // Listen for new tracks via the 'track' event.
+    pc.addEventListener('track', event => {
+      console.log("New track received:", event.track);
+      remoteStream.addTrack(event.track);
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStream;
+      }
     });
-    if (remoteVideoRef.current) {
+    
+    // Add any existing tracks (in case 'track' event already fired)
+    pc.getReceivers().forEach(receiver => {
+      if (receiver.track) {
+        console.log("Existing track:", receiver.track);
+        remoteStream.addTrack(receiver.track);
+      }
+    });
+    
+    if (remoteVideoRef.current && remoteStream.getTracks().length > 0) {
       remoteVideoRef.current.srcObject = remoteStream;
+    } else {
+      console.log("No tracks found on remote stream");
     }
   };
 
@@ -158,13 +202,14 @@ function App() {
     pc.getSenders().forEach(sender => {
       if (sender.track && sender.track.kind === 'audio') {
         sender.track.enabled = isMuted;
+        console.log(`Audio track enabled: ${sender.track.enabled}`);
       }
     });
     setIsMuted(!isMuted);
   };
 
   const handleOpenDoor = () => {
-    alert('Door opening command sent!');
+    alert("Door opening command sent!");
   };
 
   const endCall = () => {
@@ -225,11 +270,15 @@ function App() {
       </div>
 
       {incomingCallInfo && !isCallOngoing && (
-        <div className="incoming-call-panel">
-          <p className="incoming-call">{incomingCallInfo}</p>
-          <div className="answer-controls">
-            <button onClick={handleAnswer} className="answer-button">Answer</button>
-            <button onClick={handleDecline} className="decline-button">Decline</button>
+        <div className="incoming-call-panel" onClick={() => setIncomingCallInfo('')}>
+          <div className="incoming-call-content" onClick={(e) => e.stopPropagation()}>
+            <p className="incoming-call">{incomingCallInfo}</p>
+            {!(incomingCallInfo === 'Call ended' || incomingCallInfo === 'Call declined') && (
+              <div className="answer-controls">
+                <button onClick={handleAnswer} className="answer-button">Answer</button>
+                <button onClick={handleDecline} className="decline-button">Decline</button>
+              </div>
+            )}
           </div>
         </div>
       )}
