@@ -1,14 +1,14 @@
 {
   "files": {
-    "main.css": "/sip-connection/static/css/main.08c9e724.css",
-    "main.js": "/sip-connection/static/js/main.5b0ff93f.js",
+    "main.css": "/sip-connection/static/css/main.ccedced5.css",
+    "main.js": "/sip-connection/static/js/main.b653bd30.js",
     "static/media/ringtone.mp3": "/sip-connection/static/media/ringtone.fe8ff7387e672b01fe8f.mp3",
     "index.html": "/sip-connection/index.html",
-    "main.08c9e724.css.map": "/sip-connection/static/css/main.08c9e724.css.map",
-    "main.5b0ff93f.js.map": "/sip-connection/static/js/main.5b0ff93f.js.map"
+    "main.ccedced5.css.map": "/sip-connection/static/css/main.ccedced5.css.map",
+    "main.b653bd30.js.map": "/sip-connection/static/js/main.b653bd30.js.map"
   },
   "entrypoints": [
-    "static/css/main.08c9e724.css",
-    "static/js/main.5b0ff93f.js"
+    "static/css/main.ccedced5.css",
+    "static/js/main.b653bd30.js"
   ]
 }
