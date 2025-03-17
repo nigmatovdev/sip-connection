@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { 
   UserAgent, 
   Registerer, 
@@ -8,54 +8,52 @@ import {
 import './App.css';
 
 function App() {
-  // Pre-populated SIP connection details (hidden by default)
+  // SIP connection details
   const [wssUrl] = useState('wss://moydom.bgsoft.uz/ws');
   const [sipExtension] = useState('104');
   const [username] = useState('104');
   const [password] = useState('12345678');
-  const [registrationStatus, setRegistrationStatus] = useState('Not registered');
-
-  // State to toggle connection details visibility
-  const [showConnectionDetails, setShowConnectionDetails] = useState(false);
+  const [registrationStatus, setRegistrationStatus] = useState('Connecting...');
 
   // Call-related state
-  const [destination, setDestination] = useState('');
   const [incomingCallInfo, setIncomingCallInfo] = useState('');
   const [isCallOngoing, setIsCallOngoing] = useState(false);
-  const [localStream, setLocalStream] = useState(null);
+  const [isMuted, setIsMuted] = useState(false);
 
   // Refs for SIP objects and media elements
   const sipRef = useRef({ userAgent: null, registerer: null });
   const currentSessionRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const localVideoRef = useRef(null);
 
-  // Handler to toggle the connection details panel
-  const toggleConnectionDetails = () => {
-    setShowConnectionDetails(prev => !prev);
-  };
+  // Auto-connect on component mount
+  useEffect(() => {
+    handleConnect();
+    return () => {
+      // Cleanup on unmount
+      if (sipRef.current.userAgent) {
+        sipRef.current.userAgent.stop();
+      }
+    };
+  }, []);
 
-  // Connect/Registration handler using the new SIP.js API
   const handleConnect = () => {
-    // Convert SIP URI string to a proper URI object.
     const targetUri = UserAgent.makeURI(`sip:${sipExtension}@moydom.bgsoft.uz`);
     if (!targetUri) {
       setRegistrationStatus('Invalid SIP URI');
       return;
     }
+
     const config = {
       uri: targetUri,
       authorizationUsername: username,
       authorizationPassword: password,
       transportOptions: { wsServers: [wssUrl] },
-      // Enable both audio and video
       sessionDescriptionHandlerFactoryOptions: {
         constraints: { audio: true, video: true }
       }
     };
 
     const userAgent = new UserAgent(config);
-    // Use the delegate to handle incoming calls
     userAgent.delegate = {
       onInvite: (invitation) => {
         currentSessionRef.current = invitation;
@@ -64,55 +62,32 @@ function App() {
       }
     };
 
-    // Start the UA and register
     userAgent.start().then(() => {
       const registerer = new Registerer(userAgent);
       sipRef.current = { userAgent, registerer };
 
-      // Listen for registration state changes
       registerer.stateChange.addListener((state) => {
-        if (state === RegistererState.Registered) {
-          setRegistrationStatus('Registered Successfully!');
-        } else if (state === RegistererState.Unregistered) {
-          setRegistrationStatus('Unregistered');
-        } else if (state === RegistererState.Terminated) {
-          setRegistrationStatus('Registration Terminated');
+        switch (state) {
+          case RegistererState.Registered:
+            setRegistrationStatus('Ready to receive calls');
+            break;
+          case RegistererState.Unregistered:
+            setRegistrationStatus('Disconnected');
+            break;
+          case RegistererState.Terminated:
+            setRegistrationStatus('Connection terminated');
+            break;
+          default:
+            break;
         }
       });
       registerer.register();
     }).catch((error) => {
-      console.error("Failed to start UserAgent:", error);
-      setRegistrationStatus(`Registration Failed: ${error.message}`);
+      console.error("Connection failed:", error);
+      setRegistrationStatus(`Connection Failed: ${error.message}`);
     });
   };
 
-  // Outgoing call handler
-  const handleCall = () => {
-    if (!sipRef.current.userAgent) {
-      alert('Not connected yet!');
-      return;
-    }
-    const targetURI = UserAgent.makeURI(`sip:${destination}@moydom.bgsoft.uz`);
-    if (!targetURI) {
-      alert('Invalid target URI!');
-      return;
-    }
-    // Initiate an outgoing call with video
-    const inviter = sipRef.current.userAgent.invite(targetURI.toString(), {
-      sessionDescriptionHandlerOptions: { constraints: { audio: true, video: true } }
-    });
-    currentSessionRef.current = inviter;
-    inviter.stateChange.addListener((state) => {
-      if (state === SessionState.Established) {
-        setIsCallOngoing(true);
-        setupRemoteMedia(inviter);
-      } else if (state === SessionState.Terminated) {
-        endCall();
-      }
-    });
-  };
-
-  // Answer an incoming call
   const handleAnswer = () => {
     if (!currentSessionRef.current) return;
     const invitation = currentSessionRef.current;
@@ -130,7 +105,6 @@ function App() {
     });
   };
 
-  // Updated Decline Handler – check session state before deciding how to end the call.
   const handleDecline = () => {
     if (!currentSessionRef.current) return;
     const session = currentSessionRef.current;
@@ -144,19 +118,6 @@ function App() {
     resetSession();
   };
 
-  // Hang up an ongoing call
-  const handleHangUp = () => {
-    if (!currentSessionRef.current) return;
-    const session = currentSessionRef.current;
-    if (session.state === SessionState.Established) {
-      session.bye();
-    } else {
-      session.reject();
-    }
-    endCall();
-  };
-
-  // Setup remote media by grabbing all receivers and attaching to remote video element
   const setupRemoteMedia = (session) => {
     const pc = session.sessionDescriptionHandler.peerConnection;
     const remoteStream = new MediaStream();
@@ -168,10 +129,29 @@ function App() {
     }
   };
 
-  // End call and cleanup
+  const toggleMute = () => {
+    if (!currentSessionRef.current) return;
+    
+    const session = currentSessionRef.current;
+    const pc = session.sessionDescriptionHandler.peerConnection;
+    pc.getSenders().forEach(sender => {
+      if (sender.track && sender.track.kind === 'audio') {
+        sender.track.enabled = isMuted;
+      }
+    });
+    setIsMuted(!isMuted);
+  };
+
+  const handleOpenDoor = () => {
+    // Implement door opening logic here
+    // This could be an API call to your door system
+    alert('Door opening command sent!');
+  };
+
   const endCall = () => {
     setIncomingCallInfo('');
     setIsCallOngoing(false);
+    setIsMuted(false);
     resetSession();
   };
 
@@ -182,80 +162,40 @@ function App() {
     currentSessionRef.current = null;
   };
 
-  // Start local video preview by obtaining camera and mic stream
-  const startLocalVideo = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setLocalStream(stream);
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        localVideoRef.current.muted = true; // Prevent feedback
-      }
-    } catch (error) {
-      console.error("Failed to get local video:", error);
-    }
-  };
-
   return (
     <div className="container">
-      <h1 className="header">Fancy React SIP Client</h1>
-      
-      {/* Toggle Icon for Connection Details */}
-      <div className="toggle-container">
-        <button onClick={toggleConnectionDetails} className="icon-button">
-          {showConnectionDetails ? 'Hide Connection Details ▲' : 'Show Connection Details ▼'}
-        </button>
+      <div className="status-bar">
+        <span className={`status-indicator ${registrationStatus.includes('Ready') ? 'connected' : ''}`}></span>
+        {registrationStatus}
       </div>
-      
-      {/* Connection Panel (hidden by default) */}
-      {showConnectionDetails && (
-        <div className="panel">
-          <h2>Connection Details</h2>
-          <p><strong>WSS URL:</strong> {wssUrl}</p>
-          <p><strong>SIP Extension:</strong> {sipExtension}</p>
-          <p><strong>Username:</strong> {username}</p>
-          <p><strong>Password:</strong> {password}</p>
-          <button onClick={handleConnect} className="button">Connect</button>
-          <p><strong>Status:</strong> {registrationStatus}</p>
+
+      <div className="video-panel">
+        <video ref={remoteVideoRef} className="remote-video" autoPlay playsInline />
+        
+        {isCallOngoing && (
+          <div className="call-controls">
+            <button onClick={toggleMute} className={`control-button ${isMuted ? 'muted' : ''}`}>
+              {isMuted ? 'Unmute' : 'Mute'}
+            </button>
+            <button onClick={handleOpenDoor} className="control-button door-button">
+              Open Door
+            </button>
+            <button onClick={handleDecline} className="control-button end-call">
+              End Call
+            </button>
+          </div>
+        )}
+      </div>
+
+      {incomingCallInfo && !isCallOngoing && (
+        <div className="incoming-call-panel">
+          <p className="incoming-call">{incomingCallInfo}</p>
+          <div className="answer-controls">
+            <button onClick={handleAnswer} className="answer-button">Answer</button>
+            <button onClick={handleDecline} className="decline-button">Decline</button>
+          </div>
         </div>
       )}
-      
-      {/* Call Controls Panel */}
-      <div className="panel">
-        <h2>Call Controls</h2>
-        <div className="input-group">
-          <label><strong>Destination:</strong></label>
-          <input 
-            type="text" 
-            value={destination} 
-            onChange={(e) => setDestination(e.target.value)} 
-            placeholder="Enter extension or number" 
-            className="input-field"
-          />
-          <button onClick={handleCall} className="button">Call</button>
-          <button onClick={handleHangUp} className="button button-danger" disabled={!isCallOngoing}>Hang</button>
-        </div>
-        <h3>Incoming Call</h3>
-        <p className="incoming-call">{incomingCallInfo}</p>
-        <button onClick={handleAnswer} className="button" disabled={!incomingCallInfo}>Answer</button>
-        <button onClick={handleDecline} className="button button-danger" disabled={!incomingCallInfo}>Decline</button>
-      </div>
-      
-      {/* Video Streaming Panel */}
-      <div className="panel">
-        <h2>Video Streaming</h2>
-        <div className="video-container">
-          <div className="video-box">
-            <h4>Local Video</h4>
-            <video ref={localVideoRef} className="video" autoPlay playsInline />
-            <button onClick={startLocalVideo} className="button">Start Local Preview</button>
-          </div>
-          <div className="video-box">
-            <h4>Remote Video</h4>
-            <video ref={remoteVideoRef} className="video" autoPlay playsInline />
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
